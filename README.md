@@ -133,7 +133,7 @@ python3 gamalytic.py --appids appids.txt --out-data gamalytic.csv --concurrency 
 --add-f2p              — включать игры с price==0 в сохранение и расчёты
 --concurrency, -c <n>  — параллелизм (default: 5)
 --timeout <sec>        — таймаут запроса (default: 30)
---delay <sec>          — задержка **перед** каждым запросом (default: 0.0)
+--delay <sec>          — задержка перед каждым запросом (default: 0.0)
 --rps <float>          — стартовая requests-per-second (default: 1.0)
 --rps-min <float>      — минимальная rps (default: 0.1)
 --rps-max <float>      — максимальная rps (default: 5.0)
