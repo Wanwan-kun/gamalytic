@@ -79,7 +79,7 @@ python3 gamalytic.py --appids appids.txt --out-data gamalytic.csv --concurrency 
 
 ### Вывод / подсчёты
 
-* **`--top <int>`** — сколько записей показывать в секции Top N (по revenue). **(по умолчанию: `5`)**
+* **`--top <int>`** — сколько записей показывать в секции Top N (по revenue). **(по умолчанию: `10`)**
 
 ---
 
@@ -139,5 +139,5 @@ python3 gamalytic.py --appids appids.txt --out-data gamalytic.csv --concurrency 
 --rps-max <float>      — максимальная rps (default: 5.0)
 --rps-increase <float> — add step on success (default: 0.05)
 --rps-decrease-factor  — multiplicative decrease on 429 (default: 0.5)
---top <n>              — сколько результатов в Top games N (default: 5)
+--top <n>              — сколько результатов в Top games N (default: 10)
 ```
