@@ -17,19 +17,19 @@
 
 ```bash
 # Стандартный запуск (fetch -> save -> stats), F2P исключены:
-python3 gamalytic.py --appids appids.txt --out-data gamalytic.csv --api-key YOUR_KEY
+python gamalytic.py --appids appids.txt --out-data gamalytic.csv --api-key YOUR_KEY
 
 # Включить F2P (price == 0) в сохранение и расчёт:
-python3 gamalytic.py --appids appids.txt --out-data gamalytic.csv --add-f2p --api-key YOUR_KEY
+python gamalytic.py --appids appids.txt --out-data gamalytic.csv --add-f2p --api-key YOUR_KEY
 
 # Только собрать данные и сохранить (без расчётов):
-python3 gamalytic.py --appids appids.txt --out-data gamalytic.json --format json --fetch-only --api-key YOUR_KEY
+python gamalytic.py --appids appids.txt --out-data gamalytic.json --format json --fetch-only --api-key YOUR_KEY
 
 # Только расчёты по существующему файлу (без запросов):
-python3 gamalytic.py --stats-only --out-data gamalytic.csv
+python gamalytic.py --stats-only --out-data gamalytic.csv
 
 # С rate-limiter и умеренной скоростью:
-python3 gamalytic.py --appids appids.txt --out-data gamalytic.csv --concurrency 3 --delay 0.5 --rps 1.0 --api-key YOUR_KEY
+python gamalytic.py --appids appids.txt --out-data gamalytic.csv --concurrency 3 --delay 0.5 --rps 1.0 --api-key YOUR_KEY
 ```
 
 ---
