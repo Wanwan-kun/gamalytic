@@ -5,6 +5,12 @@ gamalytic.py
 (обновлённый) Fetch from Gamalytic API and compute stats (combined script)
 with adaptive token-bucket rate limiter and Retry-After handling.
 
+Добавлено:
+ - извлечение поля tags (список тегов) из API-ответа
+ - сохранение tags в выходной JSON/CSV (в CSV теги разделяются "|")
+ - при загрузке CSV/JSON нормализуются теги в список
+ - вычисление Top 10 tags of all games и вывод блока сразу после Top {top_n} games by revenue
+
 Новые флаги (rate limitting):
   --rps                начальная скорость, запросов в секунду (default 1.0)
   --rps-min            минимальная скорость (default 0.1)
@@ -25,6 +31,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from collections import Counter
 
 API_URL_TEMPLATE = "https://api.gamalytic.com/game/{}"
 
@@ -39,6 +46,8 @@ FIELD_CANDIDATES = {
     "reviewScore": ["reviewScore", "score", "review_score", "rating", "reviewRating"],
     "avgPlaytime": ["avgPlaytime", "average_playtime", "avg_playtime", "avg_playtime_hours", "average_playtime_hours", "playtime", "average_playtime_minutes"]
 }
+
+TAG_CANDIDATES = ["tags", "genres", "categories", "tags_list", "game_tags", "labels"]
 
 # ----------------- Adaptive token bucket -----------------
 class AdaptiveTokenBucket:
@@ -184,6 +193,7 @@ def coerce_number(val: Any) -> Optional[float]:
     except Exception:
         return None
 
+
 def try_extract_field(obj: Any, candidates: List[str]) -> Optional[Any]:
     if obj is None:
         return None
@@ -208,6 +218,50 @@ def try_extract_field(obj: Any, candidates: List[str]) -> Optional[Any]:
             pass
     return None
 
+
+def normalize_tags(val: Any) -> List[str]:
+    """Normalize tags into a list of trimmed strings."""
+    if val is None:
+        return []
+    if isinstance(val, list):
+        out = []
+        for it in val:
+            if it is None:
+                continue
+            s = str(it).strip()
+            if s:
+                out.append(s)
+        return out
+    if isinstance(val, dict):
+        # sometimes tags are a dict of {id: name} or similar
+        out = []
+        for v in val.values():
+            if v is None:
+                continue
+            s = str(v).strip()
+            if s:
+                out.append(s)
+        return out
+    if isinstance(val, str):
+        s = val.strip()
+        if s == "":
+            return []
+        # try parse JSON array string
+        if s.startswith("[") or s.startswith("{"):
+            try:
+                parsed = json.loads(s)
+                return normalize_tags(parsed)
+            except Exception:
+                pass
+        # split on common separators
+        parts = re.split(r"[,\|;]+", s)
+        parts = [p.strip() for p in parts if p.strip()]
+        return parts
+    # fallback
+    s = str(val).strip()
+    return [s] if s else []
+
+
 def format_money_int(v: Optional[float]) -> str:
     if v is None:
         return "N/A"
@@ -218,6 +272,7 @@ def format_money_int(v: Optional[float]) -> str:
     sign = "-" if n < 0 else ""
     s = f"{abs(n):,}".replace(",", " ")
     return f"{sign}${s}"
+
 
 def format_price(v: Optional[float]) -> str:
     if v is None:
@@ -233,6 +288,7 @@ def format_price(v: Optional[float]) -> str:
     frac_part = f"{frac:.2f}"[1:]
     return f"{sign}${int_part}{frac_part}"
 
+
 def format_int_spaces(v: Optional[float]) -> str:
     if v is None:
         return "N/A"
@@ -244,6 +300,7 @@ def format_int_spaces(v: Optional[float]) -> str:
     s = f"{abs(n):,}".replace(",", " ")
     return f"{sign}{s}"
 
+
 def format_score(v: Optional[float]) -> str:
     if v is None:
         return "N/A"
@@ -251,6 +308,7 @@ def format_score(v: Optional[float]) -> str:
         return f"{float(v):.2f}"
     except Exception:
         return str(v)
+
 
 def playtime_hours_to_hm(v: Optional[float]) -> str:
     if v is None:
@@ -352,6 +410,11 @@ async def fetch_one(session: aiohttp.ClientSession, appid: str, api_key: Optiona
                 out["reviewsSteam"] = coerce_number(try_extract_field(game_obj, FIELD_CANDIDATES["reviewsSteam"]))
                 out["reviewScore"] = coerce_number(try_extract_field(game_obj, FIELD_CANDIDATES["reviewScore"]))
                 out["avgPlaytime"] = coerce_number(try_extract_field(game_obj, FIELD_CANDIDATES["avgPlaytime"]))
+
+                # extract tags (normalize to list of strings)
+                tags_raw = try_extract_field(game_obj, TAG_CANDIDATES)
+                out["tags"] = normalize_tags(tags_raw)
+
                 out["raw"] = game_obj
                 return out
         except asyncio.TimeoutError:
@@ -368,6 +431,7 @@ async def fetch_one(session: aiohttp.ClientSession, appid: str, api_key: Optiona
             continue
 
     return {"appid": str(appid), "error": "failed", "reason": last_exc}
+
 
 async def fetch_all(appids: List[str], api_key: Optional[str], concurrency: int, timeout: int, delay: float,
                     token_bucket: AdaptiveTokenBucket) -> List[Dict[str, Any]]:
@@ -394,7 +458,7 @@ async def fetch_all(appids: List[str], api_key: Optional[str], concurrency: int,
     results_sorted = sorted(results, key=lambda r: order.get(str(r.get("appid")), 999999))
     return results_sorted
 
-# ----------------- IO & Stats (same as before) -----------------
+# ----------------- IO & Stats (same as before, but with tags handling) -----------------
 def save_data(results: List[Dict[str, Any]], outpath: str, fmt: str = "csv"):
     outpath = Path(outpath)
     if fmt == "json" or outpath.suffix.lower() == ".json":
@@ -402,14 +466,23 @@ def save_data(results: List[Dict[str, Any]], outpath: str, fmt: str = "csv"):
             json.dump(results, f, ensure_ascii=False, indent=2)
         print(f"Saved JSON to {outpath}")
         return
-    fieldnames = ["appid", "name", "players", "owners", "copiesSold", "revenue", "price", "reviewsSteam", "reviewScore", "avgPlaytime"]
+    # CSV path
+    fieldnames = ["appid", "name", "players", "owners", "copiesSold", "revenue", "price", "reviewsSteam", "reviewScore", "avgPlaytime", "tags"]
     with outpath.open("w", encoding="utf-8", newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for r in results:
             row = {k: r.get(k, "") for k in fieldnames}
+            tags = r.get("tags")
+            if isinstance(tags, list):
+                row["tags"] = "|".join(tags)
+            elif tags is None:
+                row["tags"] = ""
+            else:
+                row["tags"] = str(tags)
             writer.writerow(row)
     print(f"Saved CSV to {outpath}")
+
 
 def load_data(path: str, fmt: str = "csv") -> List[Dict[str, Any]]:
     p = Path(path)
@@ -451,8 +524,30 @@ def load_data(path: str, fmt: str = "csv") -> List[Dict[str, Any]]:
                 out[k] = coerce_number(out[k])
             else:
                 out[k] = None
+        # normalize tags field
+        if "tags" in out:
+            t = out["tags"]
+            if t is None:
+                out["tags"] = []
+            elif isinstance(t, list):
+                out["tags"] = [str(x).strip() for x in t if x is not None and str(x).strip()]
+            elif isinstance(t, str):
+                s = t.strip()
+                if s == "":
+                    out["tags"] = []
+                elif "|" in s:
+                    out["tags"] = [x.strip() for x in s.split("|") if x.strip()]
+                elif "," in s:
+                    out["tags"] = [x.strip() for x in s.split(",") if x.strip()]
+                else:
+                    out["tags"] = [s]
+            else:
+                out["tags"] = [str(t).strip()]
+        else:
+            out["tags"] = []
         coerced.append(out)
     return coerced
+
 
 def compute_stats_list(values: List[Optional[float]]) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], int]:
     clean = [v for v in values if v is not None and not (isinstance(v, float) and math.isnan(v))]
@@ -463,6 +558,7 @@ def compute_stats_list(values: List[Optional[float]]) -> Tuple[Optional[float], 
     mean = statistics.mean(clean)
     median = statistics.median(clean)
     return mn, mx, mean, median, len(clean)
+
 
 def build_results_text(results: List[Dict[str, Any]], top_n: int = 5) -> str:
     revenues = [r.get("revenue") for r in results]
@@ -479,7 +575,7 @@ def build_results_text(results: List[Dict[str, Any]], top_n: int = 5) -> str:
     if cop_count == 0:
         lines.append("  (no numeric copiesSold values found)")
     else:
-        lines.append(f"  Count numeric: {cop_count}")
+        lines.append(f"  Game count: {cop_count}")
         lines.append(f"  Averge: {format_int_spaces(cop_mean)}")
         lines.append(f"  Median: {format_int_spaces(cop_median)}")
         lines.append(f"  Min   : {format_int_spaces(cop_min)}")
@@ -490,7 +586,7 @@ def build_results_text(results: List[Dict[str, Any]], top_n: int = 5) -> str:
     if rev_count == 0:
         lines.append("  (no numeric revenue values found)")
     else:
-        lines.append(f"  Count numeric: {rev_count}")
+        lines.append(f"  Game count: {rev_count}")
         lines.append(f"  Averge: {format_money_int(rev_mean)}")
         lines.append(f"  Median: {format_money_int(rev_median)}")
         lines.append(f"  Min   : {format_money_int(rev_min)}")
@@ -502,7 +598,7 @@ def build_results_text(results: List[Dict[str, Any]], top_n: int = 5) -> str:
         lines.append("  (no numeric price values found)")
     else:
         def fmt_p(x): return format_price(x)
-        lines.append(f"  Count numeric: {pr_count}")
+        lines.append(f"  Game count: {pr_count}")
         lines.append(f"  Averge: {fmt_p(pr_mean)}")
         lines.append(f"  Median: {fmt_p(pr_median)}")
         lines.append(f"  Min   : {fmt_p(pr_min)}")
@@ -571,6 +667,34 @@ def build_results_text(results: List[Dict[str, Any]], top_n: int = 5) -> str:
         lines.append(line)
 
     lines.append("")
+
+    # --- Top tags block ---
+    tag_counter: Counter = Counter()
+    for r in results:
+        tags = r.get("tags") or []
+        if not isinstance(tags, list):
+            # defensive: if tags is a string, normalize quickly
+            tags = normalize_tags(tags)
+        for t in tags:
+            tag_counter[t] += 1
+
+    lines.append("Top 10 tags of all games")
+    if not tag_counter:
+        lines.append("  (no tags found in dataset)")
+        lines.append("")
+        return "\n".join(lines)
+
+    top_tags = tag_counter.most_common(10)
+    # compute widths
+    rank_w = max(4, len(str(len(top_tags))))
+    tag_w = max(3, min(40, max(len(t[0]) for t in top_tags)))
+    freq_w = max(9, max(len(str(t[1])) for t in top_tags))
+
+    lines.append(f"  { 'Rank':>{rank_w}}  {'Tag':<{tag_w}}  {'Frequency':>{freq_w}}")
+    for i, (tag, freq) in enumerate(top_tags, start=1):
+        lines.append(f"  {i:>{rank_w}}  {tag:<{tag_w}}  {freq:>{freq_w}}")
+
+    lines.append("")
     return "\n".join(lines)
 
 # ----------------- CLI -----------------
@@ -584,7 +708,7 @@ def parse_args():
     p.add_argument("--concurrency", "-c", type=int, default=5, help="concurrency for requests")
     p.add_argument("--timeout", type=int, default=30, help="per-request timeout (seconds)")
     p.add_argument("--delay", type=float, default=0.0, help="delay (seconds) BEFORE each request (default 0.0)")
-    p.add_argument("--top", type=int, default=5, help="how many top games to list")
+    p.add_argument("--top", type=int, default=10, help="how many top games to list")
     p.add_argument("--add-f2p", action="store_true", help="also include games with price == 0 (F2P) in saved data and stats")
     group = p.add_mutually_exclusive_group()
     group.add_argument("--fetch-only", action="store_true", help="only fetch & save data, do not compute stats")
@@ -596,6 +720,7 @@ def parse_args():
     p.add_argument("--rps-increase", type=float, default=0.05, help="additive increase to rps on success. Default 0.05")
     p.add_argument("--rps-decrease-factor", type=float, default=0.5, help="multiplicative factor to decrease rps on 429. Default 0.5")
     return p.parse_args()
+
 
 async def main_async(args):
     fetch_only = args.fetch_only
@@ -662,6 +787,7 @@ async def main_async(args):
     print("\n--- Results (preview) ---\n")
     print(results_text)
     return 0
+
 
 def main():
     args = parse_args()
